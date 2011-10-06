@@ -15,10 +15,20 @@ class PantheonHTTPChecker(object):
     """
     This is a checker which validates credentials by making HTTP requests to a
     REST API which sits on top of the actual credentials data.
+
+    @ivar _host: The hostname or dotted-quad IPv4 address of the HTTP server
+        against which to authenticate.
+
+    @ivar _port: The port number of the HTTP server against which to
+        authenticate.
     """
     implements(ICredentialsChecker)
 
     credentialInterfaces = [IUsernamePassword, ISSHPrivateKey]
+
+    def __init__(self, host, port):
+        self._host = host
+        self._port = port
 
     def requestAvatarId(self, credentials):
         """
