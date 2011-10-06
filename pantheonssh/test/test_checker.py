@@ -3,6 +3,8 @@
 Tests for L{pantheonssh.checker}.
 """
 
+import json
+
 from zope.interface.verify import verifyObject
 
 from twisted.internet import reactor
@@ -39,7 +41,7 @@ class MockPantheonAuthResource(Resource):
 
 
     def render_POST(self, request):
-        if request.postpath[0] == ['sites']:
+        if request.postpath[0] == 'sites':
             if request.postpath[1] in self.sites:
                 if request.postpath[2] == 'check-password':
                     password = json.loads(request.content.read())
@@ -52,6 +54,15 @@ class MockPantheonAuthResource(Resource):
     def render_GET(self, request):
         request.setResponseCode(NOT_FOUND)
         return '404'
+
+
+    def _checkPassword(self, site, password):
+        """
+        Determine whether a password is valid for a site by comparing it to the
+        password for each user which is allowed access to the site.  Return
+        C{True} if it is valid, C{False} otherwise,
+        """
+        return any(self.users[user] == password for user in self.sites[site])
 
 
 
@@ -98,7 +109,7 @@ class PantheonHTTPCheckerTests(TestCase):
         self.server.startService()
         self.addCleanup(self.server.stopService)
         self.checker = PantheonHTTPChecker(
-            '127.0.0.1', self.server.port.getHost().port)
+            reactor, '127.0.0.1', self.server.port.getHost().port)
 
 
     def test_interface(self):
@@ -125,9 +136,9 @@ class PantheonHTTPCheckerTests(TestCase):
         passed an L{IUsernamePassword} credentials object which does not
         correspond to any valid user.
         """
-        credentials = UsernamePassword(self.username, 'bad wrong password')
-        self.assertRaises(
-                UnauthorizedLogin, self.checker.requestAvatarId, credentials)
+        credentials = UsernamePassword(self.site, 'bad wrong password')
+        d = self.checker.requestAvatarId(credentials)
+        return self.assertFailure(d, UnauthorizedLogin)
 
 
     def test_invalidPublicKey(self):
@@ -162,7 +173,7 @@ class PantheonHTTPCheckerTests(TestCase):
         the password by issuing a request to the HTTP server with which it is
         configured.
         """
-        credentials = UsernamePassword(self.username, self.password)
+        credentials = UsernamePassword(self.site, self.password)
         d = self.checker.requestAvatarId(credentials)
-        d.addCallback(self.assertEqual, site)
+        d.addCallback(self.assertEqual, self.site)
         return d
