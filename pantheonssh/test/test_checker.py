@@ -9,6 +9,7 @@ from zope.interface.verify import verifyObject
 
 from twisted.internet import reactor
 
+from twisted.python.filepath import FilePath
 from twisted.trial.unittest import TestCase
 from twisted.cred.error import UnauthorizedLogin
 from twisted.cred.checkers import ICredentialsChecker
@@ -18,6 +19,8 @@ from twisted.application.service import Service
 from twisted.web.http import NOT_FOUND
 from twisted.web.resource import Resource
 from twisted.web.server import Site
+from twisted.conch.error import ValidPublicKey
+from twisted.conch.ssh.keys import Key
 
 from pantheonssh.checker import PantheonHTTPChecker
 
@@ -31,13 +34,20 @@ class MockPantheonAuthResource(Resource):
           POST a JSON encoded string giving a plaintext password.  The response
           is a JSON encoded boolean indicating whether the password is valid for
           the site in the URL.
+
+        /sites/<site name>/check-key
+
+          POST a JSON encoded string giving an OpenSSH-style public key string.
+          The response is a JSON encoded boolean indicating whether the password
+          is valid for the site in the URL.
     """
     isLeaf = True
 
-    def __init__(self, sites, users):
+    def __init__(self, sites, passwords, keys):
         Resource.__init__(self)
         self.sites = sites
-        self.users = users
+        self.passwords = passwords
+        self.keys = keys
 
 
     def render_POST(self, request):
@@ -46,6 +56,10 @@ class MockPantheonAuthResource(Resource):
                 if request.postpath[2] == 'check-password':
                     password = json.loads(request.content.read())
                     valid = self._checkPassword(request.postpath[1], password)
+                    return json.dumps(valid)
+                elif request.postpath[2] == 'check-key':
+                    publicKey = json.loads(request.content.read())
+                    valid = self._checkPublicKey(request.postpath[1], publicKey)
                     return json.dumps(valid)
         request.setResponseCode(NOT_FOUND)
         return '404'
@@ -60,9 +74,21 @@ class MockPantheonAuthResource(Resource):
         """
         Determine whether a password is valid for a site by comparing it to the
         password for each user which is allowed access to the site.  Return
-        C{True} if it is valid, C{False} otherwise,
+        C{True} if it is valid, C{False} otherwise.
         """
-        return any(self.users[user] == password for user in self.sites[site])
+        return any(
+            self.passwords[user] == password for user in self.sites[site])
+
+
+    def _checkPublicKey(self, site, publicKey):
+        """
+        Determine whether a key is valid for a site by comparing the public blob
+        representation to the blob for the key for each user which is allowed
+        access to the site.  Return C{True} if it is valid, C{False} otherwise.
+        """
+        return any(
+            self.keys[user].public().toString('openssh') == publicKey
+            for user in self.sites[site])
 
 
 
@@ -71,15 +97,17 @@ class MockPantheonAuthServer(Service):
     A web service which simulates the Pantheon authentication and authorization
     HTTP REST API.  See L{MockPantheonAuthResource} for details.
     """
-    def __init__(self, reactor, sites, users):
+    def __init__(self, reactor, sites, passwords, keys):
         self.reactor = reactor
         self.sites = sites
-        self.users = users
+        self.passwords = passwords
+        self.keys = keys
 
 
     def startService(self):
         Service.startService(self)
-        self.resource = MockPantheonAuthResource(self.sites, self.users)
+        self.resource = MockPantheonAuthResource(
+            self.sites, self.passwords, self.keys)
         self.factory = Site(self.resource)
         self.port = self.reactor.listenTCP(0, self.factory)
 
@@ -103,9 +131,13 @@ class PantheonHTTPCheckerTests(TestCase):
         self.site = 'example.com'
         self.username = 'alice'
         self.password = 'correct password'
+        keyString = FilePath(__file__).sibling('id_rsa').getContent()
+        self.privateKey = Key.fromString(keyString)
         self.server = MockPantheonAuthServer(
             reactor, sites={self.site: [self.username]},
-            users={self.username: self.password})
+            passwords={self.username: self.password},
+            keys={self.username: self.privateKey},
+            )
         self.server.startService()
         self.addCleanup(self.server.stopService)
         self.checker = PantheonHTTPChecker(
@@ -147,10 +179,24 @@ class PantheonHTTPCheckerTests(TestCase):
         passed an L{ISSHPrivateKey} credentials object which does not correspond
         to any valid user.
         """
+        blob = self.privateKey.blob()
+        blob = blob[:64] + blob[:63:-1]
+        credentials = SSHPrivateKey(
+            self.site, 'sha1', blob, 'some random bytes', None)
+        return self.assertFailure(
+            self.checker.requestAvatarId(credentials), UnauthorizedLogin)
+
+
+    def test_misformattedPublicKey(self):
+        """
+        L{PantheonHTTPChecker.requestAvatarId} raises L{UnauthorizedLogin} when
+        passed an L{ISSHPrivateKey} credentials object with an unparseable key
+        blob.
+        """
         credentials = SSHPrivateKey(
             self.site, 'sha1', 'hello, world', 'some random bytes', None)
-        self.assertRaises(
-                UnauthorizedLogin, self.checker.requestAvatarId, credentials)
+        return self.assertFailure(
+            self.checker.requestAvatarId(credentials), UnauthorizedLogin)
 
 
     def test_invalidCredentials(self):
@@ -174,6 +220,37 @@ class PantheonHTTPCheckerTests(TestCase):
         configured.
         """
         credentials = UsernamePassword(self.site, self.password)
+        d = self.checker.requestAvatarId(credentials)
+        d.addCallback(self.assertEqual, self.site)
+        return d
+
+
+    def test_publicKeyValidityCheck(self):
+        """
+        A user may determine the validity of a public key by presenting it
+        without using it to sign any data.  If the site represented by
+        L{ISSHPrivateKey.user} is accessible to a user for whom that public key
+        is valid, L{PantheonHTTPChecker.requestAvatarId} fails with
+        L{ValidPublicKey}.
+        """
+        credentials = SSHPrivateKey(
+            self.site, 'sha1', self.privateKey.blob(), None, None)
+        d = self.checker.requestAvatarId(credentials)
+        return self.assertFailure(d, ValidPublicKey)
+
+
+    def test_publicKeyWithSignature(self):
+        """
+        A user may authenticate for a site by using that site as the username
+        and a public key associated with a user who is allowed access to that
+        site.  When L{PantheonHTTPChecker.requestAvatarId} is presented with
+        such an L{ISSHPrivateKey} credentials object, it returns the site
+        identifier.
+        """
+        data = "here are the bytes, they are for you, and they are random"
+        credentials = SSHPrivateKey(
+            self.site, 'sha1', self.privateKey.blob(), data,
+            self.privateKey.sign(data))
         d = self.checker.requestAvatarId(credentials)
         d.addCallback(self.assertEqual, self.site)
         return d
