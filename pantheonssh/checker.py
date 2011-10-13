@@ -9,40 +9,26 @@ import json
 
 from zope.interface import implements
 
+from twisted.python.log import err
 from twisted.internet.defer import succeed
 from twisted.cred.error import UnauthorizedLogin
 from twisted.cred.checkers import ICredentialsChecker
 from twisted.cred.credentials import IUsernamePassword, ISSHPrivateKey
 from twisted.web.http_headers import Headers
-from twisted.web.client import Agent
 from twisted.conch.error import ValidPublicKey
 from twisted.conch.ssh.keys import BadKeyError, Key
 
-from pantheonssh._httpclient import StringProducer, readBody
+from pantheonssh._apiclient import BadResponse, APIClientMixin
 
 
-class PantheonHTTPChecker(object):
+class PantheonHTTPChecker(APIClientMixin, object):
     """
     This is a checker which validates credentials by making HTTP requests to a
     REST API which sits on top of the actual credentials data.
-
-    @ivar _reactor: An L{IReactorSSL} provider to use to issue HTTP requests.
-
-    @ivar _host: The hostname or dotted-quad IPv4 address of the HTTP server
-        against which to authenticate.
-
-    @ivar _port: The port number of the HTTP server against which to
-        authenticate.
     """
     implements(ICredentialsChecker)
 
     credentialInterfaces = [IUsernamePassword, ISSHPrivateKey]
-
-    def __init__(self, reactor, host, port):
-        self._reactor = reactor
-        self._host = host
-        self._port = port
-
 
     def requestAvatarId(self, credentials):
         """
@@ -56,27 +42,6 @@ class PantheonHTTPChecker(object):
         raise NotImplementedError()
 
 
-    def _post(self, url, headers, body):
-        agent = Agent(self._reactor)
-        response = agent.request('POST', url, headers, body)
-        def cbResponse(response):
-            # XXX Is this is right check to verify the server is giving us a
-            # good response?
-            if response.code == 200:
-                return readBody(response)
-            # XXX Log this unexpected error
-            raise UnauthorizedLogin()
-        body = response.addCallback(cbResponse)
-        return body
-
-
-    def _getURL(self, site, method):
-        # XXX Add some direct unit tests for this - including proper quoting of
-        # the site identifier
-        return 'http://%s:%d/sites/%s/%s' % (
-            self._host, self._port, site, method)
-
-
     def _checkPassword(self, credentials):
         """
         Check a L{IUsernamePassword} credentials-based authentication attempt.
@@ -84,8 +49,8 @@ class PantheonHTTPChecker(object):
         the password given is valid for that site.
         """
         url = self._getURL(credentials.username, 'check-password')
-        body = StringProducer(json.dumps(credentials.password))
-        response = self._post(url, Headers(), body)
+        body = json.dumps(credentials.password)
+        response = self._request("POST", url, Headers(), body)
         def cbBody(body):
             valid = json.loads(body)
             if valid:
@@ -93,6 +58,12 @@ class PantheonHTTPChecker(object):
             raise UnauthorizedLogin()
         result = response.addCallback(cbBody)
         return result
+
+
+    def _ebBadResponse(self, reason):
+        reason.trap(BadResponse)
+        err(reason, "Unexpected bad response from authentication backend")
+        raise UnauthorizedLogin()
 
 
     def _blobValidForSite(self, site, blob):
@@ -117,8 +88,9 @@ class PantheonHTTPChecker(object):
             return succeed(False)
 
         url = self._getURL(site, 'check-key')
-        body = StringProducer(json.dumps(publicKey))
-        response = self._post(url, Headers(), body)
+        body = json.dumps(publicKey)
+        response = self._request("POST", url, Headers(), body)
+        response.addErrback(self._ebBadResponse)
         response.addCallback(json.loads)
         return response
 
