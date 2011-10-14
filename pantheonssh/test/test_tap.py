@@ -22,6 +22,8 @@ from pantheonssh.realm import PantheonRealm
 from pantheonssh.checker import PantheonHTTPChecker
 
 HOST_KEY_PATH = FilePath(__file__).sibling('id_rsa').path
+SSL_KEY = FilePath(__file__).sibling('cakey.pem')
+SSL_CERT = FilePath(__file__).sibling('cacert.pem')
 
 class PluginTests(TestCase):
     """
@@ -52,10 +54,15 @@ class PluginTests(TestCase):
         options = pantheonssh.options()
         options.parseOptions([
                 '--auth-host', 'example.com', '--auth-port', '1234',
-                '--host-key', HOST_KEY_PATH, '--listen', 'tcp:22'])
+                '--host-key', HOST_KEY_PATH, '--listen', 'tcp:22',
+                '--client-key', SSL_KEY.path,
+                '--client-cert', SSL_CERT.path])
         self.assertEqual(options['auth-host'], 'example.com')
         self.assertEqual(options['auth-port'], 1234)
         self.assertEqual(options['host-key'], Key.fromFile(HOST_KEY_PATH))
+
+        self.assertEqual(options['client-key'], SSL_KEY)
+        self.assertEqual(options['client-cert'], SSL_CERT)
         self.assertEqual(1, len(options['listen']))
         self.assertIsInstance(options['listen'][0], TCP4ServerEndpoint)
 
@@ -65,26 +72,22 @@ class PluginTests(TestCase):
         If any of I{--auth-host}, I{--auth-port}, I{--host-key}, or I{--listen}
         is not given, L{pantheonssh.options.parseOptions} raises L{UsageError}.
         """
-        options = pantheonssh.options()
-        self.assertRaises(
-            UsageError, options.parseOptions,
-            ['--auth-port', '1234', '--host-key', HOST_KEY_PATH,
-             '--listen', 'tcp:22'])
-        options = pantheonssh.options()
-        self.assertRaises(
-            UsageError, options.parseOptions,
-            ['--auth-host', 'example.com', '--host-key', HOST_KEY_PATH,
-             '--listen', 'tcp:22'])
-        options = pantheonssh.options()
-        self.assertRaises(
-            UsageError, options.parseOptions,
-            ['--auth-host', 'example.com', '--auth-port', '1234',
-             '--listen', 'tcp:22'])
-        options = pantheonssh.options()
-        self.assertRaises(
-            UsageError, options.parseOptions,
-            ['--auth-host', 'example.com', '--auth-port', '1234',
-             '--host-key', HOST_KEY_PATH])
+        requiredOptions = [
+            ('--auth-host', 'example.com'),
+            ('--auth-port', '1234'),
+            ('--host-key', HOST_KEY_PATH),
+            ('--listen', 'tcp:22'),
+            ('--client-key', SSL_KEY.path),
+            ('--client-cert', SSL_CERT.path),
+            ]
+        for i in range(len(requiredOptions)):
+            options = pantheonssh.options()
+            use = []
+            for n, opt in enumerate(requiredOptions):
+                # Skip one of them
+                if n != i:
+                    use.extend(opt)
+            self.assertRaises(UsageError, options.parseOptions, use)
 
 
     def test_badKey(self):
@@ -97,13 +100,15 @@ class PluginTests(TestCase):
         self.assertRaises(
             UsageError, options.parseOptions,
             ['--auth-host', 'example.com', '--auth-port', '1234',
-             '--listen', 'tcp:22', '--host-key', nonexistent])
+             '--listen', 'tcp:22', '--host-key', nonexistent,
+             '--client-key', SSL_KEY.path, '--client-cert', SSL_CERT.path])
         invalid = self.mktemp()
         FilePath(invalid).setContent("some random junk")
         self.assertRaises(
             UsageError, options.parseOptions,
             ['--auth-host', 'example.com', '--auth-port', '1234',
-             '--listen', 'tcp:22', '--host-key', invalid])
+             '--listen', 'tcp:22', '--host-key', invalid,
+             '--client-key', SSL_KEY.path, '--client-cert', SSL_CERT.path])
 
 
     def test_makeService(self):

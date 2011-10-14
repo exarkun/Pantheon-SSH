@@ -1,6 +1,12 @@
+
 import json
 
+from OpenSSL.SSL import (
+    TLSv1_METHOD, VERIFY_PEER, VERIFY_FAIL_IF_NO_PEER_CERT, FILETYPE_PEM,
+    Context)
+
 from twisted.internet import reactor
+from twisted.internet.ssl import KeyPair, PrivateCertificate, DN
 from twisted.python.filepath import FilePath
 from twisted.application.service import Service
 from twisted.web.http import NOT_FOUND
@@ -81,20 +87,71 @@ class MockPantheonAuthResource(Resource):
 
 
 
+class _StubContextFactory(object):
+    def __init__(self, context):
+        self._context = context
+
+
+    def getContext(self):
+        return self._context
+
+
+
 class MockPantheonAuthServer(Service):
     """
     A web service which simulates the Pantheon authentication and authorization
-    HTTP REST API.  See L{MockPantheonAuthResource} for details.
+    HTTPS REST API.  See L{MockPantheonAuthResource} for details.
+
+    @ivar reactor: The reactor to use to set up the HTTPS server.
+
+    @ivar resource: The root of the mock server's resource hierarchy.
+
+    @ivar ca: A CA certificate to use to generate a certificate for the HTTPS
+        server.  This is also the certificate which will be expected and
+        required to have signed the client's certificate.
+    @type ca: L{twisted.internet.ssl.PrivateCertificate}
     """
-    def __init__(self, reactor, resource):
+    def __init__(self, reactor, resource, ca):
         self.reactor = reactor
         self.resource = resource
+        self.ca = ca
+
+
+    def getServerContext(self):
+        """
+        Generate a new L{OpenSSL.SSL.Context} object configured to use a
+        certificate signed by C{self.ca} and only accept connections from peers
+        which are also using a certificate signed by C{self.ca}.
+        """
+        # Generate a new key for the server and have the CA sign a certificate
+        # for it.
+        key = KeyPair.generate(size=512)
+        req = key.certificateRequest(DN(commonName='localhost'))
+        certData = self.ca.signCertificateRequest(req, lambda dn: True, 1)
+        cert = PrivateCertificate.load(certData, key)
+
+        # Use the new key/certificate
+        context = Context(TLSv1_METHOD)
+        context.use_privatekey(key.original)
+        context.use_certificate(cert.original)
+        context.check_privatekey()
+
+        # Allow peer certificates signed by the CA
+        store = context.get_cert_store()
+        store.add_cert(self.ca.original)
+
+        # Verify the peer certificate and require that they have one.
+        def verify(conn, cert, errno, depth, preverify_ok):
+            return preverify_ok
+        context.set_verify(VERIFY_PEER | VERIFY_FAIL_IF_NO_PEER_CERT, verify)
+        return context
 
 
     def startService(self):
         Service.startService(self)
         self.factory = Site(self.resource)
-        self.port = self.reactor.listenTCP(0, self.factory)
+        contextFactory = _StubContextFactory(self.getServerContext())
+        self.port = self.reactor.listenSSL(0, self.factory, contextFactory)
 
 
     def stopService(self):
@@ -116,12 +173,20 @@ class FakeBackendMixin(object):
         self.password = 'correct password'
         keyString = FilePath(__file__).sibling('id_rsa').getContent()
         self.privateKey = Key.fromString(keyString)
+
+        caKeyString = FilePath(__file__).sibling('cakey.pem').getContent()
+        self.caKey = KeyPair.load(caKeyString, FILETYPE_PEM)
+        caCertString = FilePath(__file__).sibling('cacert.pem').getContent()
+        self.caCert = PrivateCertificate.load(
+            caCertString, self.caKey, FILETYPE_PEM)
+
         self.resource = MockPantheonAuthResource(
             sites={self.site: [self.username]},
             authorizations={self.site: dict(cwd=self.cwd, uid=self.uid)},
             passwords={self.username: self.password},
             keys={self.username: self.privateKey},
             )
-        self.server = MockPantheonAuthServer(reactor, self.resource)
+        self.server = MockPantheonAuthServer(
+            reactor, self.resource, self.caCert)
         self.server.startService()
         self.addCleanup(self.server.stopService)

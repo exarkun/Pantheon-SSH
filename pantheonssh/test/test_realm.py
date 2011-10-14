@@ -18,7 +18,7 @@ from twisted.conch.ssh.session import SSHSession
 
 from pantheonssh.realm import PantheonSession, PantheonSite, PantheonRealm
 from pantheonssh.test.fakebackend import FakeBackendMixin
-
+from pantheonssh.test.test_tap import SSL_KEY, SSL_CERT
 
 class MockProcessState(object):
     """
@@ -269,7 +269,8 @@ class PantheonRealmTests(FakeBackendMixin, TestCase):
         """
         FakeBackendMixin.setUp(self)
         self.realm = PantheonRealm(
-            reactor, '127.0.0.1', self.server.port.getHost().port)
+            reactor, '127.0.0.1', self.server.port.getHost().port,
+            SSL_KEY.path, SSL_CERT.path)
 
 
     def test_interface(self):

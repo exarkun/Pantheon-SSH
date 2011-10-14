@@ -6,8 +6,11 @@ Implementation of the twistd plugins for the Pantheon SSH server.
 
 __all__ = ["Options", "makeService"]
 
+from OpenSSL.SSL import FILETYPE_PEM
+
 from twisted.python.filepath import FilePath
 from twisted.python.usage import UsageError, Options
+from twisted.internet.ssl import KeyPair, PrivateCertificate
 from twisted.internet.endpoints import serverFromString
 from twisted.application.service import MultiService
 from twisted.application.internet import StreamServerEndpointService
@@ -28,6 +31,12 @@ class Options(Options):
         ("auth-port", None, None,
          "Port number of backend authentication server", int),
         ("host-key", None, None, "Path to host private key", FilePath),
+        ('client-key', None, None,
+         "Path to PEM-format client key to use with HTTPS requests to the "
+         "authentication server.", FilePath),
+        ('client-cert', None, None,
+         "Path to PEM-format client certificate to use with HTTPS requests to "
+         "the authentication server.", FilePath),
         ]
 
     def opt_listen(self, description):
@@ -44,7 +53,8 @@ class Options(Options):
         """
         Verify the configuration is usable.
         """
-        for required in ["auth-host", "auth-port", "host-key"]:
+        for required in ["auth-host", "auth-port", "host-key", "client-key",
+                         "client-cert"]:
             if self[required] is None:
                 raise UsageError("--%s option is required" % (required,))
         try:
@@ -68,9 +78,14 @@ def makeService(options):
     key = options["host-key"]
     factory.privateKeys = {key.sshType(): key}
     factory.publicKeys = {key.sshType(): key.public()}
-    realm = PantheonRealm(reactor, options['auth-host'], options['auth-port'])
+    realm = PantheonRealm(
+        reactor,
+        options['auth-host'], options['auth-port'],
+        options['client-key'], options['client-cert'])
     checker = PantheonHTTPChecker(
-        reactor, options['auth-host'], options['auth-port'])
+        reactor,
+        options['auth-host'], options['auth-port'],
+        options['client-key'], options['client-cert'])
     factory.portal = Portal(realm, [checker])
 
     service = MultiService()

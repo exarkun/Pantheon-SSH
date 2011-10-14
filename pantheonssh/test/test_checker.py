@@ -17,6 +17,7 @@ from twisted.conch.error import ValidPublicKey
 from pantheonssh.checker import PantheonHTTPChecker
 
 from pantheonssh.test.fakebackend import FakeBackendMixin
+from pantheonssh.test.test_tap import SSL_KEY, SSL_CERT
 
 
 class PantheonHTTPCheckerTests(FakeBackendMixin, TestCase):
@@ -31,7 +32,8 @@ class PantheonHTTPCheckerTests(FakeBackendMixin, TestCase):
         """
         FakeBackendMixin.setUp(self)
         self.checker = PantheonHTTPChecker(
-            reactor, '127.0.0.1', self.server.port.getHost().port)
+            reactor, '127.0.0.1', self.server.port.getHost().port,
+            SSL_KEY.path, SSL_CERT.path)
 
 
     def test_interface(self):
