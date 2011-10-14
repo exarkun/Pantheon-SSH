@@ -87,11 +87,13 @@ class PantheonSession(object):
 
 
     def eofReceived(self):
-        1/0
+        # TODO Close stdin of the child process?
+        pass
 
 
     def closed(self):
-        1/0
+        # TODO Close stdin of the child process?
+        pass
 
 
 
