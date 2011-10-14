@@ -1,1 +1,6 @@
 An SSH server which accepts and executes Drush commands.
+
+The server requires an SSH private key to use as its host key.  It also requires
+the address of the backend authentication server:
+
+  $ twistd -n pantheon-ssh --host-key ./id_rsa --auth-host 10.0.0.3 --auth-port 443 --listen tcp:22

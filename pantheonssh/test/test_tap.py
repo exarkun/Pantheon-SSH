@@ -3,10 +3,25 @@
 Tests for the twistd application plugin to run a Pantheon SSH server.
 """
 
+from zope.interface.verify import verifyObject
+
+from twisted.python.usage import UsageError
+from twisted.python.filepath import FilePath
 from twisted.trial.unittest import TestCase
+from twisted.plugin import IPlugin
+from twisted.internet.endpoints import TCP4ServerEndpoint
+from twisted.application.service import IServiceMaker, MultiService
+from twisted.application.internet import StreamServerEndpointService
+from twisted.conch.ssh.factory import SSHFactory
+from twisted.conch.ssh.keys import Key
+from twisted.cred.credentials import IUsernamePassword, ISSHPrivateKey
 
-from twisted.plugins.pantheonssh_tap import PantheonSSH
+from twisted.plugins.pantheonssh_tap import pantheonssh
 
+from pantheonssh.realm import PantheonRealm
+from pantheonssh.checker import PantheonHTTPChecker
+
+HOST_KEY_PATH = FilePath(__file__).sibling('id_rsa').path
 
 class PluginTests(TestCase):
     """
@@ -15,7 +30,105 @@ class PluginTests(TestCase):
     """
     def test_interface(self):
         """
-        L{PantheonSSH} provides L{IServiceMaker} and L{IPlugin}.
+        L{pantheonssh} provides L{IServiceMaker} and L{IPlugin}.
         """
-        self.assertTrue(verifyObject(IServiceMaker, PantheonSSH))
-        self.assertTrue(verifyObject(IPlugin, PantheonSSH))
+        self.assertTrue(verifyObject(IServiceMaker, pantheonssh))
+        self.assertTrue(verifyObject(IPlugin, pantheonssh))
+
+
+    def test_description(self):
+        """
+        L{pantheonssh} defines a name and description for the plugin.
+        """
+        self.assertIsInstance(pantheonssh.name, str)
+        self.assertIsInstance(pantheonssh.description, str)
+
+
+    def test_options(self):
+        """
+        An instance of L{pantheonssh.options} can parse a command line argument
+        list for the address of a backend authentication server to use.
+        """
+        options = pantheonssh.options()
+        options.parseOptions([
+                '--auth-host', 'example.com', '--auth-port', '1234',
+                '--host-key', HOST_KEY_PATH, '--listen', 'tcp:22'])
+        self.assertEqual(options['auth-host'], 'example.com')
+        self.assertEqual(options['auth-port'], 1234)
+        self.assertEqual(options['host-key'], Key.fromFile(HOST_KEY_PATH))
+        self.assertEqual(1, len(options['listen']))
+        self.assertIsInstance(options['listen'][0], TCP4ServerEndpoint)
+
+
+    def test_required(self):
+        """
+        If any of I{--auth-host}, I{--auth-port}, I{--host-key}, or I{--listen}
+        is not given, L{pantheonssh.options.parseOptions} raises L{UsageError}.
+        """
+        options = pantheonssh.options()
+        self.assertRaises(
+            UsageError, options.parseOptions,
+            ['--auth-port', '1234', '--host-key', HOST_KEY_PATH,
+             '--listen', 'tcp:22'])
+        options = pantheonssh.options()
+        self.assertRaises(
+            UsageError, options.parseOptions,
+            ['--auth-host', 'example.com', '--host-key', HOST_KEY_PATH,
+             '--listen', 'tcp:22'])
+        options = pantheonssh.options()
+        self.assertRaises(
+            UsageError, options.parseOptions,
+            ['--auth-host', 'example.com', '--auth-port', '1234',
+             '--listen', 'tcp:22'])
+        options = pantheonssh.options()
+        self.assertRaises(
+            UsageError, options.parseOptions,
+            ['--auth-host', 'example.com', '--auth-port', '1234',
+             '--host-key', HOST_KEY_PATH])
+
+
+    def test_badKey(self):
+        """
+        If a non-existent or unparseable host key file is given, L{UsageError}
+        is raised.
+        """
+        options = pantheonssh.options()
+        nonexistent = self.mktemp()
+        self.assertRaises(
+            UsageError, options.parseOptions,
+            ['--auth-host', 'example.com', '--auth-port', '1234',
+             '--listen', 'tcp:22', '--host-key', nonexistent])
+        invalid = self.mktemp()
+        FilePath(invalid).setContent("some random junk")
+        self.assertRaises(
+            UsageError, options.parseOptions,
+            ['--auth-host', 'example.com', '--auth-port', '1234',
+             '--listen', 'tcp:22', '--host-key', invalid])
+
+
+    def test_makeService(self):
+        """
+        C{pantheonssh.makeService} accepts an instance of L{pantheonssh.options}
+        and returns a service which listens for SSH connections and
+        authenticates them using the backend server specified by those options.
+        """
+        options = pantheonssh.options()
+        options['auth-host'] = 'example.com'
+        options['auth-port'] = 1234
+        options['host-key'] = Key.fromFile(HOST_KEY_PATH)
+        options['listen'] = [TCP4ServerEndpoint(None, None)]
+        service = pantheonssh.makeService(options)
+        self.assertIsInstance(service, MultiService)
+        self.assertEqual(1, len(service.services))
+        service = service.services[0]
+        self.assertIsInstance(service, StreamServerEndpointService)
+        self.assertIsInstance(service.factory, SSHFactory)
+        realm = service.factory.portal.realm
+        self.assertIsInstance(realm, PantheonRealm)
+        self.assertEqual(realm._host, 'example.com')
+        self.assertEqual(realm._port, 1234)
+        checkers = service.factory.portal.checkers
+        self.assertIdentical(checkers[IUsernamePassword], checkers[ISSHPrivateKey])
+        self.assertIsInstance(checkers[ISSHPrivateKey], PantheonHTTPChecker)
+        self.assertEqual(checkers[ISSHPrivateKey]._host, 'example.com')
+        self.assertEqual(checkers[ISSHPrivateKey]._port, 1234)
