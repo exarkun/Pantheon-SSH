@@ -1,6 +1,40 @@
 An SSH server which accepts and executes Drush commands.
 
-The server requires an SSH private key to use as its host key.  It also requires
-the address of the backend authentication server:
+The server must run as root to launch user processes with the correct
+privileges.  It may run with a non-root effective UID/GID while it is not
+actively launching user processes:
 
-  $ twistd -n pantheon-ssh --host-key ./id_rsa --auth-host 10.0.0.3 --auth-port 443 --listen tcp:22
+  $ sudo twistd --euid --uid 65534 --gid 65534 \
+
+This configures the server with a real UID/GID of 0 but runs it with an
+effective UID/GID of 65534 (a nobody user) for most operation.
+
+The server may be kept in the foreground for testing or deployment using
+something like daemontools:
+
+    -n \
+
+The plugin name is "pantheon-ssh", and it requires command line arguments to
+specify the address of the backend authorization server, the location of a key
+and certificate to use for HTTPS requests.
+
+the location of its SSH
+host key, and
+
+    pantheon-ssh --auth-host localhost --auth-port 49753 \
+        --client-key pantheonssh/test/cakey.pem --client-cert pantheonssh/test/cacert.pem \
+        --listen tcp:22 \
+        --host-key pantheonssh/test/id_rsa
+
+Combining all these options, the server might be run using this full command,
+assuming a working directory of the top-level of the source (so the dummy keys
+can be found):
+
+  $ sudo twistd --euid --uid 65534 --gid 65534 -n \
+      pantheon-ssh \
+          --auth-host auth.example.com --auth-port 443 \
+          --client-key pantheonssh/test/cakey.pem --client-cert pantheonssh/test/cacert.pem \
+          --listen tcp:22 \
+          --host-key pantheonssh/test/id_rsa
+
+Proper keys should be generated for real operation.
