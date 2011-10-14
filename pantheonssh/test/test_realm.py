@@ -287,7 +287,8 @@ class PantheonRealmTests(FakeBackendMixin, TestCase):
         the site requested.
         """
         d = self.realm.requestAvatar('example.com', None, IConchUser)
-        def cbAvatar(avatar):
+        def cbAvatar((interface, avatar, logout)):
+            self.assertIdentical(IConchUser, interface)
             self.assertIsInstance(avatar, PantheonSite)
             self.assertEqual(self.cwd, avatar.cwd)
             self.assertEqual(self.uid, avatar.uid)

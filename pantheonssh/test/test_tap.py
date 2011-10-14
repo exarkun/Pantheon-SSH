@@ -121,6 +121,8 @@ class PluginTests(TestCase):
         options['auth-host'] = 'example.com'
         options['auth-port'] = 1234
         options['host-key'] = Key.fromFile(HOST_KEY_PATH)
+        options['client-key'] = SSL_KEY
+        options['client-cert'] = SSL_CERT
         options['listen'] = [TCP4ServerEndpoint(None, None)]
         service = pantheonssh.makeService(options)
         self.assertIsInstance(service, MultiService)

@@ -13,7 +13,7 @@ from twisted.python.components import registerAdapter
 from twisted.cred.portal import IRealm
 from twisted.web.http_headers import Headers
 from twisted.conch.avatar import ConchUser
-from twisted.conch.interfaces import ISession
+from twisted.conch.interfaces import IConchUser, ISession
 from twisted.conch.ssh.session import SSHSession
 
 from pantheonssh._apiclient import APIClientMixin
@@ -141,7 +141,10 @@ class PantheonRealm(APIClientMixin, object):
         d = self._request("GET", url, Headers())
         def cbResponse(response):
             params = json.loads(response)
-            return PantheonSite(params['cwd'], params['uid'])
+            return (
+                IConchUser,
+                PantheonSite(params['cwd'], params['uid']),
+                lambda: None)
         d.addCallback(cbResponse)
         return d
 

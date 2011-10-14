@@ -81,11 +81,11 @@ def makeService(options):
     realm = PantheonRealm(
         reactor,
         options['auth-host'], options['auth-port'],
-        options['client-key'], options['client-cert'])
+        options['client-key'].path, options['client-cert'].path)
     checker = PantheonHTTPChecker(
         reactor,
         options['auth-host'], options['auth-port'],
-        options['client-key'], options['client-cert'])
+        options['client-key'].path, options['client-cert'].path)
     factory.portal = Portal(realm, [checker])
 
     service = MultiService()
