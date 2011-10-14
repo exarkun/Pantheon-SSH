@@ -146,3 +146,16 @@ class PantheonHTTPCheckerTests(FakeBackendMixin, TestCase):
         d = self.checker.requestAvatarId(credentials)
         d.addCallback(self.assertEqual, self.site)
         return d
+
+
+    def test_publicKeyWithWrongSignature(self):
+        """
+        If the signature presented in an L{ISSHPrivateKey} credentials object is
+        does not verify with the public key presented, authentication fails.
+        """
+        data = "here are the bytes, they are for you, and they are random"
+        credentials = SSHPrivateKey(
+            self.site, 'sha1', self.privateKey.blob(), data,
+            self.privateKey.sign(data)[::-1])
+        d = self.checker.requestAvatarId(credentials)
+        return self.assertFailure(d, UnauthorizedLogin)
