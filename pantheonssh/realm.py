@@ -9,6 +9,7 @@ import json
 
 from zope.interface import implements
 
+from twisted.python.log import msg
 from twisted.python.components import registerAdapter
 from twisted.cred.portal import IRealm
 from twisted.web.http_headers import Headers
@@ -64,6 +65,7 @@ class PantheonSession(object):
                 childFDs=None)
         finally:
             os.seteuid(saved)
+        self._site.logExecCommand(command)
 
 
     def getPty(self, term, windowSize, modes):
@@ -102,6 +104,8 @@ class PantheonSite(object, ConchUser):
     L{PantheonSite} represents a user's access to a particular site on the
     system.
 
+    @ivar siteId: A C{str} identifying this site.
+
     @ivar cwd: A C{str} representing the working directory in which commands are
         started.
 
@@ -110,11 +114,25 @@ class PantheonSite(object, ConchUser):
     """
     conn = None
 
-    def __init__(self, cwd, uid):
+    def __init__(self, siteId, cwd, uid):
         ConchUser.__init__(self)
+
+        # Allow the user to open a channel of type session.  This implementation
+        # will look up the ISession adapter for this site and use the resulting
+        # object to authorize any SSH actions.
         self.channelLookup['session'] = SSHSession
+
+        self.siteId = siteId
         self.cwd = cwd
         self.uid = uid
+
+
+    def logExecCommand(self, command):
+        """
+        Log a command executed for this site.
+        """
+        msg(event='execCommand', siteId=self.siteId,
+            cwd=self.cwd, uid=self.uid, command=command)
 
 
 registerAdapter(PantheonSession, PantheonSite, ISession)
@@ -145,7 +163,7 @@ class PantheonRealm(APIClientMixin, object):
             params = json.loads(response)
             return (
                 IConchUser,
-                PantheonSite(params['cwd'], params['uid']),
+                PantheonSite(avatarId, params['cwd'], params['uid']),
                 lambda: None)
         d.addCallback(cbResponse)
         return d

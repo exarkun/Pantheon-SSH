@@ -8,6 +8,7 @@ from errno import EPERM
 from zope.interface import implements
 from zope.interface.verify import verifyObject, verifyClass
 
+from twisted.python.log import addObserver, removeObserver
 from twisted.internet.interfaces import IReactorProcess
 from twisted.internet.protocol import ProcessProtocol
 from twisted.internet import reactor
@@ -19,6 +20,16 @@ from twisted.conch.ssh.session import SSHSession
 from pantheonssh.realm import PantheonSession, PantheonSite, PantheonRealm
 from pantheonssh.test.fakebackend import FakeBackendMixin
 from pantheonssh.test.test_tap import SSL_KEY, SSL_CERT
+
+
+class Anything(object):
+    """
+    An object that compares equal to all other objects.
+    """
+    def __eq__(self, other):
+        return True
+
+
 
 class MockProcessState(object):
     """
@@ -173,14 +184,19 @@ class PantheonSessionTests(TestCase):
         running it with the working directory and uid its avatar, the
         L{PantheonSite}, specifies.
         """
-        nobody = 99
         cwd = "/some/path"
         expectedUID = 58927
+
+        site = PantheonSite(None, cwd, expectedUID)
+        messages = []
+        site.logExecCommand = messages.append
+
+        nobody = 99
         mockos = MockProcessState(0, 0)
         mockos.setegid(nobody)
         mockos.seteuid(nobody)
         proc = MemoryProcessReactor(mockos)
-        session = PantheonSession(PantheonSite(cwd, expectedUID))
+        session = PantheonSession(site)
         session.reactor = proc
         session.os = mockos
         expectedProto = object()
@@ -202,6 +218,9 @@ class PantheonSessionTests(TestCase):
         # Ensure we end up in a good state, uid/gid-wise.
         self.assertEqual(nobody, mockos.geteuid())
         self.assertEqual(nobody, mockos.getegid())
+
+        # Ensure the command is logged
+        self.assertEqual(["echo 'hello, world'"], messages)
 
 
     def test_windowChanged(self):
@@ -230,7 +249,8 @@ class PantheonSiteTests(TestCase):
         """
         A L{PantheonSite} instance provides L{IConchUser}.
         """
-        self.assertTrue(verifyObject(IConchUser, PantheonSite(None, None)))
+        self.assertTrue(
+            verifyObject(IConchUser, PantheonSite(None, None, None)))
 
 
     def test_sessionChannel(self):
@@ -240,7 +260,7 @@ class PantheonSiteTests(TestCase):
         """
         cwd = "/foo/bar"
         uid = 5812
-        avatar = PantheonSite(cwd, uid)
+        avatar = PantheonSite(None, cwd, uid)
         channel = avatar.lookupChannel("session", 2 ** 16, 2 ** 16, "")
         self.assertIsInstance(channel, SSHSession)
 
@@ -250,11 +270,34 @@ class PantheonSiteTests(TestCase):
         Adapting L{PantheonSite} to L{ISession}, as L{SSHSession} does, results
         in an instance of L{PantheonSession}.
         """
-        avatar = PantheonSite(None, None)
+        avatar = PantheonSite(None, None, None)
         session = ISession(avatar)
         self.assertIsInstance(session, PantheonSession)
         self.assertIdentical(avatar, session._site)
 
+
+    def test_logExecCommand(self):
+        """
+        L{PantheonSite.logExecCommand} emits a log event identifying the site it
+        represents and a command which was executed on behalf of that site.
+        """
+        siteId = "example.com"
+        cwd = "/random/path"
+        uid = 1234
+        command = "upload the files"
+        avatar = PantheonSite(siteId, cwd, uid)
+
+        messages = []
+        addObserver(messages.append)
+        self.addCleanup(removeObserver, messages.append)
+
+        avatar.logExecCommand(command)
+        self.assertEqual(
+            [dict(event='execCommand', siteId=siteId,
+                  cwd=cwd, uid=uid, command=command,
+                  isError=False, message=(), system='-',
+                  time=Anything())],
+            messages)
 
 
 class PantheonRealmTests(FakeBackendMixin, TestCase):
