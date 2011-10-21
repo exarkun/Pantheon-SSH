@@ -111,7 +111,7 @@ class PantheonSession(object):
         saved = os.geteuid()
         try:
             # Gain the permissions to send a signal to the process.
-            # TODO Would it be better to send the signal as the UID the process
+            # XXX Would it be better to send the signal as the UID the process
             # was spawned with?
             os.seteuid(0)
             try:
