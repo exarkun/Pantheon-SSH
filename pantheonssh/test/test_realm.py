@@ -4,12 +4,14 @@ Tests for L{pantheonssh.realm}.
 """
 
 from errno import EPERM
+from signal import SIGHUP
 
 from zope.interface import implements
 from zope.interface.verify import verifyObject, verifyClass
 
 from twisted.python.log import addObserver, removeObserver
-from twisted.internet.interfaces import IReactorProcess
+from twisted.internet.error import ProcessExitedAlready
+from twisted.internet.interfaces import IProcessTransport, IReactorProcess
 from twisted.internet.protocol import ProcessProtocol
 from twisted.internet import reactor
 from twisted.trial.unittest import TestCase
@@ -123,6 +125,79 @@ class MockProcessState(object):
             raise OSError(EPERM)
 
 
+class MemoryProcessTransport(object):
+    """
+    A fake implementation of part of L{IProcessTransport} which can be signaled
+    if and only if the user id matches that used to launch the process.
+
+    @ivar signals: A C{list} to which any signal successfully sent to this fake
+        process is appended.
+    """
+    implements(IProcessTransport)
+
+    def __init__(self, os):
+        self._os = os
+        self._uid = self._os.getuid()
+        self._exited = False
+        self.signals = []
+        self.stdinClosed = False
+
+
+    def signalProcess(self, signal):
+        if self._exited:
+            raise ProcessExitedAlready()
+        if self._os.getuid() != self._uid:
+            raise OSError(EPERM)
+        self.signals.append(signal)
+
+
+    def closeStdin(self):
+        self.stdinClosed = True
+
+
+    def closeChildFD(self, fd):
+        if fd == 0:
+            self.stdinClosed = True
+
+    # Stub implementations of the rest; these are unused for now, so they can be
+    # empty.  However, they are required for verifyClass to succeed, which we
+    # want to be possible to at least tell us that the above implemented methods
+    # have the right signatures.
+    def closeStdout(self):
+        pass
+
+
+    def closeStderr(self):
+        pass
+
+
+    def write(self, bytes):
+        pass
+
+
+    def writeSequence(self, seq):
+        pass
+
+
+    def writeToChild(self, fd, bytes):
+        pass
+
+
+    def getHost(self):
+        pass
+
+
+    def getPeer(self):
+        pass
+
+
+    def loseConnection(self):
+        pass
+
+
+# Ensure that the signatures match
+verifyClass(IProcessTransport, MemoryProcessTransport)
+
 
 class MemoryProcessReactor(object):
     """
@@ -132,17 +207,18 @@ class MemoryProcessReactor(object):
     implements(IReactorProcess)
 
     def __init__(self, os):
-        self.os = os
+        self._os = os
         self.processes = []
 
 
     def spawnProcess(self, processProtocol, executable, args=(), env={},
                      path=None, uid=None, gid=None, usePTY=0, childFDs=None):
-        if self.os.geteuid() != 0:
+        if self._os.geteuid() != 0:
             raise OSError(EPERM)
         self.processes.append((
                 processProtocol, executable, args, env,
                 path, uid, gid, usePTY, childFDs))
+        return MemoryProcessTransport(self._os)
 
 
 # Ensure that the signatures match
@@ -201,6 +277,7 @@ class PantheonSessionTests(TestCase):
         session.os = mockos
         expectedProto = object()
         session.execCommand(expectedProto, "echo 'hello, world'")
+        self.assertIsInstance(session._process, MemoryProcessTransport)
         process = proc.processes.pop(0)
         proto, executable, args, env, path, uid, gid, usePTY, childFDs = process
         self.assertIdentical(expectedProto, proto)
@@ -232,11 +309,48 @@ class PantheonSessionTests(TestCase):
 
 
     def test_eofReceived(self):
-        pass
+        """
+        When the eof event is received, L{PantheonSession} closed the standard
+        input of its child process.
+        """
+        mockos = MockProcessState(0, 0)
+        session = PantheonSession(None)
+        process = session._process = MemoryProcessTransport(mockos)
+        session.eofReceived()
+        self.assertTrue(process.stdinClosed)
 
 
     def test_closed(self):
-        pass
+        """
+        When the closed event is received, L{PantheonSession} closed the
+        standard input of its child process and signals it with C{SIGHUP}.
+        """
+        mockos = MockProcessState(0, 0)
+        mockos.seteuid(100)
+        session = PantheonSession(None)
+        session.os = mockos
+        process = session._process = MemoryProcessTransport(mockos)
+        session.closed()
+        self.assertTrue(process.stdinClosed)
+        self.assertEqual(process.signals, [SIGHUP])
+        self.assertEqual(mockos.geteuid(), 100)
+
+
+    def test_alreadyExited(self):
+        """
+        No unhandled exceptions are raised if the channel receives eof or is
+        closed after the child process has already exited.  stdin is still
+        closed and the process's euid is still set back to its original value.
+        """
+        mockos = MockProcessState(0, 0)
+        mockos.seteuid(100)
+        session = PantheonSession(None)
+        session.os = mockos
+        process = session._process = MemoryProcessTransport(mockos)
+        process._exited = True
+        session.closed()
+        self.assertTrue(process.stdinClosed)
+        self.assertEqual(mockos.geteuid(), 100)
 
 
 

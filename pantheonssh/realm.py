@@ -6,12 +6,14 @@ clients to access certain commands on their site.
 """
 
 import json
+from signal import SIGHUP
 
 from zope.interface import implements
 
 from twisted.python.log import msg
 from twisted.python.components import registerAdapter
 from twisted.cred.portal import IRealm
+from twisted.internet.error import ProcessExitedAlready
 from twisted.web.http_headers import Headers
 from twisted.conch.avatar import ConchUser
 from twisted.conch.interfaces import IConchUser, ISession
@@ -53,7 +55,7 @@ class PantheonSession(object):
         try:
             os.seteuid(0)
 
-            reactor.spawnProcess(
+            self._process = reactor.spawnProcess(
                 proto,
                 executable=self.shell,
                 args=[self.shell, "-c", command],
@@ -89,13 +91,35 @@ class PantheonSession(object):
 
 
     def eofReceived(self):
-        # TODO Close stdin of the child process?
-        pass
+        """
+        When the client indicates eof on the channel, indicate this to the child
+        process by closing its stdin.
+        """
+        self._process.closeStdin()
 
 
     def closed(self):
-        # TODO Close stdin of the child process?
-        pass
+        """
+        When the channel is actually closed, try to get the child process to
+        exit by closing its stdin and sending it a hang-up signal.
+        """
+        os = self.os
+        if os is None:
+            import os
+
+        self._process.closeStdin()
+        saved = os.geteuid()
+        try:
+            # Gain the permissions to send a signal to the process.
+            # TODO Would it be better to send the signal as the UID the process
+            # was spawned with?
+            os.seteuid(0)
+            try:
+                self._process.signalProcess(SIGHUP)
+            except ProcessExitedAlready:
+                pass
+        finally:
+            os.seteuid(saved)
 
 
 
